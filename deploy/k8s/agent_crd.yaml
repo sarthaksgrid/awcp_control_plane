@@ -1,0 +1,9 @@
+# ============================================================
+# AWCP — Kubernetes: Agent Registry CRD
+# ============================================================
+# Custom Resource Definition for the Agent Registry,
+# allowing agents to be managed as Kubernetes resources.
+#
+# apiVersion: awcp.io/v1alpha1
+# kind: ManagedAgent
+# ============================================================
