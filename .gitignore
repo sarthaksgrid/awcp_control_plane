@@ -1,0 +1,5 @@
+# Ignore documentation folder
+documentation/
+
+# Scratch tests (for local verification only)
+scratch_tests/

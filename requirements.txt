@@ -5,8 +5,8 @@
 # ── Core Framework ──────────────────────────────────────────
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.4
-pydantic-settings==2.7.1
+pydantic                      # Loosened to resolve conflict with flipt
+pydantic-settings
 
 # ── Workflow / Orchestration (Temporal) ─────────────────────
 temporalio==1.9.0
@@ -17,15 +17,15 @@ opa-python-client==1.3.4
 # ── LLM Providers ──────────────────────────────────────────
 anthropic==0.42.0
 openai==1.59.7
-litellm==1.55.8               # Unified LLM gateway / router
+litellm                       # Unified LLM gateway / router
 
 # ── Context & Memory ───────────────────────────────────────
-letta==0.6.6                  # Long-term agent memory
+letta                         # Long-term agent memory
 networkx==3.4.2               # Context graph DAG operations
 
 # ── Feature Flags ──────────────────────────────────────────
 openfeature-sdk==0.7.5
-flipt==0.2.0                  # Flipt Python client
+flipt                         # Loosened to resolve conflict with pydantic
 
 # ── Observability / Telemetry ──────────────────────────────
 opentelemetry-api==1.29.0
@@ -53,11 +53,10 @@ modal==0.68.43                # Serverless container execution
 docker==7.1.0                 # Docker SDK for local sandbox
 
 # ── Serialization & Validation ─────────────────────────────
-orjson==3.10.13
 pyyaml==6.0.2
 
 # ── HTTP & Async Utilities ─────────────────────────────────
-httpx==0.28.1
+httpx
 aiohttp==3.11.11
 tenacity==9.0.0               # Retry logic
 
@@ -76,4 +75,3 @@ rich==13.9.4                  # Rich terminal output
 pytest==8.3.4
 pytest-asyncio==0.25.0
 pytest-cov==6.0.0
-httpx                         # Already listed; used for test client
