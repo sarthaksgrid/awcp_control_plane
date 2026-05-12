@@ -9,107 +9,126 @@ Engine to trigger autonomy reduction when context
 diverges from the last checkpoint.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
-from datetime import date, datetime, time
-from decimal import Decimal
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Mapping
+from typing import Any
 
 
-class ContextHasher:
-    """
-    DS-3: Cryptographic Context Hashing
-    Generates a stable, deterministic SHA-256 hash from a GoverningSlice.
-    """
+HASH_ALGORITHM = "sha256"
 
-    HASH_ALGORITHM = "sha256"
-    EXCLUDED_FIELDS = frozenset({"token_count"})
 
-    @classmethod
-    def canonicalize(cls, slice_obj: Any) -> Dict[str, Any]:
-        """
-        Convert a GoverningSlice-like object into canonical, hashable data.
-        Excluded fields (e.g. token_count) are stripped because they are
-        transient values that change after pruning.
-        """
-        return cls._normalize(cls._to_mapping(slice_obj))
+class FreshnessState(str, Enum):
+    """Result of comparing a stored context snapshot with current state."""
 
-    @classmethod
-    def canonical_json(cls, slice_obj: Any) -> str:
-        """
-        Return stable JSON used as the direct input to the hash function.
-        Keys are sorted and separators minimized for determinism.
-        """
-        return json.dumps(
-            cls.canonicalize(slice_obj),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
+    FRESH = "fresh"
+    STALE = "stale"
 
-    @classmethod
-    def generate_hash(cls, slice_obj: Any) -> str:
-        """
-        Takes a GoverningSlice object and returns its SHA-256 context hash.
-        This hash is stored in the Evidence Ledger as a tamper-proof fingerprint.
-        """
-        context_str = cls.canonical_json(slice_obj)
-        return hashlib.sha256(context_str.encode("utf-8")).hexdigest()
 
-    @staticmethod
-    def compare_hashes(current_hash: str, stored_hash: str) -> bool:
-        """
-        Return True when the current and stored context hashes match.
-        """
-        return current_hash == stored_hash
+@dataclass(frozen=True)
+class HashComparison:
+    """Structured outcome for context freshness checks."""
 
-    @classmethod
-    def is_stale(cls, slice_obj: Any, stored_hash: str) -> bool:
-        """
-        Return True when the current context no longer matches stored_hash.
-        This is the primary staleness signal fed to the Degradation Engine.
-        """
-        return cls.generate_hash(slice_obj) != stored_hash
+    stored_hash: str
+    current_hash: str
+    state: FreshnessState
+    checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    details: dict[str, Any] = field(default_factory=dict)
 
-    @staticmethod
-    def _to_mapping(slice_obj: Any) -> Mapping[str, Any]:
-        if hasattr(slice_obj, "model_dump"):
-            try:
-                return slice_obj.model_dump(mode="json")
-            except TypeError:
-                return slice_obj.model_dump()
+    @property
+    def is_fresh(self) -> bool:
+        return self.state is FreshnessState.FRESH
 
-        if isinstance(slice_obj, Mapping):
-            return slice_obj
+    @property
+    def is_stale(self) -> bool:
+        return self.state is FreshnessState.STALE
 
-        raise TypeError("ContextHasher expects a GoverningSlice, Pydantic model, or mapping")
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stored_hash": self.stored_hash,
+            "current_hash": self.current_hash,
+            "state": self.state.value,
+            "is_fresh": self.is_fresh,
+            "checked_at": self.checked_at.isoformat(),
+            "details": self.details,
+        }
 
-    @classmethod
-    def _normalize(cls, value: Any) -> Any:
-        if hasattr(value, "model_dump"):
-            return cls._normalize(cls._to_mapping(value))
 
-        if isinstance(value, Mapping):
-            return {
-                str(key): cls._normalize(child)
-                for key, child in value.items()
-                if key not in cls.EXCLUDED_FIELDS
-            }
+def canonicalize_snapshot(snapshot: Any) -> str:
+    """Serialize a snapshot into stable JSON before hashing."""
 
-        if isinstance(value, (list, tuple)):
-            return [cls._normalize(item) for item in value]
+    return json.dumps(
+        _make_json_safe(snapshot),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
 
-        if isinstance(value, str):
-            return " ".join(value.split())
 
-        if isinstance(value, (datetime, date, time)):
-            return value.isoformat()
+def compute_context_hash(snapshot: Any) -> str:
+    """Return a SHA-256 hash for any JSON-like context snapshot."""
 
-        if isinstance(value, Enum):
-            return value.value
+    payload = canonicalize_snapshot(snapshot).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
-        if isinstance(value, Decimal):
-            return str(value)
 
-        return value
+def compare_context_hashes(
+    stored_hash: str,
+    current_hash: str,
+    *,
+    details: dict[str, Any] | None = None,
+) -> HashComparison:
+    """Compare two context hashes and return a typed freshness result."""
+
+    state = FreshnessState.FRESH if stored_hash == current_hash else FreshnessState.STALE
+    return HashComparison(
+        stored_hash=stored_hash,
+        current_hash=current_hash,
+        state=state,
+        details=details or {},
+    )
+
+
+def hash_node_payload(
+    *,
+    node_type: str,
+    content: Any,
+    metadata: dict[str, Any] | None = None,
+    tags: list[str] | set[str] | tuple[str, ...] | None = None,
+    source: str | None = None,
+    actor: str | None = None,
+) -> str:
+    """Hash the immutable payload fields of a context graph node."""
+
+    return compute_context_hash(
+        {
+            "actor": actor,
+            "content": content,
+            "metadata": metadata or {},
+            "node_type": node_type,
+            "source": source,
+            "tags": sorted(tags or []),
+        }
+    )
+
+
+def _make_json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        return _make_json_safe(value.to_dict())
+    if hasattr(value, "__dict__") and not isinstance(value, type):
+        return _make_json_safe(vars(value))
+    if isinstance(value, dict):
+        return {str(key): _make_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_make_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_make_json_safe(item) for item in value)
+    return value

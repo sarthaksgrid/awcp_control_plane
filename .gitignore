@@ -1,3 +1,16 @@
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS generated files
+.DS_Store
+**/.DS_Store
+
+# Local Context Graph walkthrough artifacts
+/src/orchestration/context_graph/demo.py
+/src/orchestration/context_graph/README.md
+
 # Ignore documentation folder
 documentation/
 
