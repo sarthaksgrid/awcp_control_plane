@@ -45,7 +45,7 @@ The control plane **sits above existing runtimes — it does not replace the und
 
 ```
 Capstone/Main/
-├── requirements.txt                        # Python dependencies
+├── pyproject.toml                          # Python dependencies (managed by uv)
 ├── .env.example                            # Environment variable template
 │
 ├── src/
@@ -322,11 +322,11 @@ Capstone/Main/
 
 ```bash
 cd Capstone/Main
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv sync                        # creates .venv & installs all deps
+source .venv/bin/activate
 cp .env.example .env           # fill in values
 docker compose -f deploy/docker/docker-compose.yaml up -d
-uvicorn src.api:app --reload   # API on :8000
-streamlit run src/ui/app.py    # Dashboard on :8501
-pytest tests/ -v               # Run tests
+uv run uvicorn src.api:app --reload   # API on :8000
+uv run streamlit run src/ui/app.py    # Dashboard on :8501
+uv run pytest tests/ -v               # Run tests
 ```
