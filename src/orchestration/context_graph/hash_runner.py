@@ -11,8 +11,8 @@ that need both the assembled slice and its tamper-proof fingerprint.
 from typing import Any, Dict, List, Optional
 
 from src.common.models import AgentIdentity, WorkflowState, EvidenceEntry
-from src.orchestration.context_graph.context_manager import ContextManager
-from src.orchestration.context_graph.context_hashing import ContextHasher
+from src.orchestration.context_graph.context_manager import ContextGraphManager
+from src.orchestration.context_graph.context_hashing import canonicalize_snapshot
 
 
 def run_hash(
@@ -24,17 +24,17 @@ def run_hash(
     """
     Assemble a governing context slice and return its deterministic DS-3 hash.
     """
-    context_manager = ContextManager()
+    context_manager = ContextGraphManager()
 
     # DS-1: Assemble and prune
     slice_obj = context_manager.assemble_context(
-        identity, state, raw_signals, prior_evidence
+        state.workflow_id,
+        state.branch_id,
+        current_step=raw_signals,
     )
 
-    # DS-3: Hash the canonical form
-    hash_value = ContextHasher.generate_hash(slice_obj)
-
-    return hash_value
+    # DS-3: The GoverningSlice already computes its context_hash during assembly
+    return slice_obj.context_hash
 
 
 def run_hash_snapshot(
@@ -46,11 +46,13 @@ def run_hash_snapshot(
     """
     Return both the assembled slice and its hash for replay/debug workflows.
     """
-    context_manager = ContextManager()
+    context_manager = ContextGraphManager()
     slice_obj = context_manager.assemble_context(
-        identity, state, raw_signals, prior_evidence
+        state.workflow_id,
+        state.branch_id,
+        current_step=raw_signals,
     )
     return {
-        "context_hash": ContextHasher.generate_hash(slice_obj),
-        "canonical_context": ContextHasher.canonicalize(slice_obj),
+        "context_hash": slice_obj.context_hash,
+        "canonical_context": canonicalize_snapshot(slice_obj.to_dict()),
     }

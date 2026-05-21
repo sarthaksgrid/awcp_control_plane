@@ -47,9 +47,13 @@ class EvidenceEntry(BaseModel):
     outcome: str
     policy_ref: Optional[str] = None
 
-class GoverningSlice(BaseModel):
+class GoverningSliceSchema(BaseModel):
     """
-    Turn 1 Context: The minimum state required for governance.
+    Pydantic schema for the minimum governance state.
+
+    This is the API / serialization schema. The runtime dataclass used by
+    ContextGraphManager.assemble_context() lives in
+    src.orchestration.context_graph.context_manager.GoverningSlice.
     Target: 4K - 16K tokens.
     """
     identity: AgentIdentity
