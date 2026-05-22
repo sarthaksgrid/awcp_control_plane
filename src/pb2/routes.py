@@ -203,10 +203,55 @@ async def start_temporal_workflow(event: AgentEvent | None = None) -> dict:
             ),
         ) from exc
 
+    # Surface the run immediately so the React UI does not wait for the
+    # Temporal worker's first activity before showing operator feedback.
+    idempotency_key = state.idempotency.key_for(
+        event.workflow_id,
+        event.branch_id,
+        event.action_class,
+        event.payload,
+    )
+    workflow = state.save_workflow(
+        WorkflowRecord(
+            workflow_id=event.workflow_id,
+            branch_id=event.branch_id,
+            agent_id=event.agent_id,
+            owner=event.owner,
+            status="temporal_queued",
+            autonomy_mode="temporal_waiting_for_worker",
+            risk_tier=event.risk_tier,
+            policy_decision="pending_ds_score",
+            context_hash=event.context_hash,
+            idempotency_key=idempotency_key,
+            latest_summary=(
+                "Temporal accepted the workflow. Waiting for the PB-2 worker "
+                "to score the event and create the approval token."
+            ),
+        )
+    )
+    state.evidence.append(
+        EvidenceEntry(
+            workflow_id=event.workflow_id,
+            branch_id=event.branch_id,
+            actor="pb2-api",
+            action="temporal.workflow_start",
+            policy_result="queued",
+            context_hash=event.context_hash,
+            degradation_state="temporal_waiting_for_worker",
+            replay_trace={
+                "temporal_workflow_id": handle.id,
+                "task_queue": PB2_TASK_QUEUE,
+                "temporal_address": TEMPORAL_ADDRESS,
+            },
+            rollback_pointer=f"{event.workflow_id}:{event.branch_id}:temporal-start",
+        )
+    )
+
     return {
         "message": "PB-2 Temporal workflow started.",
         "workflow_id": handle.id,
         "task_queue": PB2_TASK_QUEUE,
+        "workflow": workflow,
     }
 
 

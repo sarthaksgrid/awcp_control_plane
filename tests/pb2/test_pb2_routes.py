@@ -108,3 +108,37 @@ def test_temporal_health_available_when_connect_succeeds(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "available"
+
+
+def test_temporal_start_is_visible_before_worker_activity(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+
+    class FakeHandle:
+        id = "pb2-wf-temporal-visible"
+
+    class FakeTemporalClient:
+        async def start_workflow(self, workflow_run, event, *, id: str, task_queue: str):
+            assert id == "pb2-wf-temporal-visible"
+            assert task_queue
+            return FakeHandle()
+
+    async def fake_connect():
+        return FakeTemporalClient()
+
+    monkeypatch.setattr(pb2_routes, "_connect_temporal", fake_connect)
+
+    response = client.post(
+        "/api/pb2/workflows/temporal/start",
+        json={"workflow_id": "wf-temporal-visible"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow"]["status"] == "temporal_queued"
+
+    dashboard = client.get("/api/pb2/dashboard").json()
+    assert dashboard["kpis"]["active_workflows"] == 1
+    assert dashboard["kpis"]["evidence_entries"] == 1
+    assert dashboard["workflows"][0]["workflow_id"] == "wf-temporal-visible"
+    assert dashboard["workflows"][0]["status"] == "temporal_queued"
+    assert dashboard["evidence"][0]["action"] == "temporal.workflow_start"

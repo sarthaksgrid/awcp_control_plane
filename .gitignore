@@ -39,6 +39,7 @@ env/
 
 # Installer logs / caches
 .uv/
+.uv-cache/
 
 # Unit test / coverage reports
 htmlcov/
@@ -97,5 +98,6 @@ poetry.lock
 # Pipenv
 Pipfile.lock
 
-# uv
-uv.lock
+# Node dependencies
+node_modules/
+frontend/node_modules/

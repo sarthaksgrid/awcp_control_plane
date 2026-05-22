@@ -1,19 +1,45 @@
 import React, { useEffect, useMemo, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE;
+const LOCAL_API_BASE = "http://127.0.0.1:8000";
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const bases = API_BASE ? [API_BASE] : ["", LOCAL_API_BASE];
+  let lastError;
 
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `Request failed: ${response.status}`);
+  for (const base of bases) {
+    try {
+      const response = await fetch(`${base}${path}`, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      const contentType = response.headers.get("content-type") || "";
+
+      if (!contentType.includes("application/json")) {
+        const error = new Error(
+          base
+            ? `API returned ${contentType || "unknown content"}`
+            : "Frontend dev server did not proxy API; falling back to FastAPI."
+        );
+        error.retryFallback = !base;
+        throw error;
+      }
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || `Request failed: ${response.status}`);
+      }
+
+      return response.json();
+    } catch (err) {
+      lastError = err;
+      if (API_BASE || !err.retryFallback) {
+        break;
+      }
+    }
   }
 
-  return response.json();
+  throw lastError;
 }
 
 function StatusBadge({ value }) {
