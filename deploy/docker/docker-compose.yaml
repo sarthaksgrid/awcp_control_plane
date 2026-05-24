@@ -1,13 +1,70 @@
-# ============================================================
-# AWCP — Docker Compose
-# ============================================================
-# Local development stack:
-#   - awcp-api         — FastAPI control plane API
-#   - awcp-worker      — Temporal worker
-#   - awcp-ui          — Streamlit operator dashboard
-#   - postgres         — PostgreSQL database
-#   - redis            — Cache and pub-sub
-#   - temporal         — Temporal server
-#   - opa              — Open Policy Agent
-#   - otel-collector   — OpenTelemetry collector
-# ============================================================
+
+services:
+
+  postgres:
+    image: postgres:13
+    container_name: awcp-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: always
+    # healthcheck:
+    #   test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:1.22
+    container_name: awcp-temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "7233:7233"
+    depends_on:
+      - postgres
+    restart: always
+    # healthcheck:
+    #   test: ["CMD", "nc", "-z", "localhost", "7233"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: awcp-temporal-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+    restart: always
+
+  minio:
+    image: minio/minio
+    container_name: awcp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: always
+
+volumes:
+  postgres_data:
+  minio_data:
