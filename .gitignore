@@ -1,0 +1,16 @@
+# Environment files
+.env
+deploy/docker/.env
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Docker
+*.log
