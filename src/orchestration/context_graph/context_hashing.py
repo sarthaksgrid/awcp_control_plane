@@ -20,6 +20,15 @@ from enum import Enum
 from typing import Any, Iterable, Mapping, Optional
 
 
+class FreshnessState(str, Enum):
+    """
+    Week 1 DS-3 freshness classification for context hash comparison.
+    """
+
+    FRESH = "fresh"
+    STALE = "stale"
+
+
 class ContextHasher:
     """
     DS-3: Cryptographic Context Hashing
@@ -129,6 +138,10 @@ class HashComparison:
     details: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def state(self) -> FreshnessState:
+        return FreshnessState.FRESH if self.is_fresh else FreshnessState.STALE
+
+    @property
     def is_stale(self) -> bool:
         return not self.is_fresh
 
@@ -136,6 +149,7 @@ class HashComparison:
         return {
             "stored_hash": self.stored_hash,
             "current_hash": self.current_hash,
+            "state": self.state.value,
             "is_fresh": self.is_fresh,
             "is_stale": self.is_stale,
             "details": dict(self.details),
