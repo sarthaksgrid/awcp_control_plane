@@ -1,0 +1,1 @@
+autonomy floor: 20%
