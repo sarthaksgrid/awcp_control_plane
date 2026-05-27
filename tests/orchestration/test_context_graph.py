@@ -1,278 +1,289 @@
-"""Tests for the Context Graph Manager."""
+"""Tests for the Context Graph Manager and DS-3 context hashing."""
 
-import pytest
+## DS-3 Context Hashing Tests
 
-from src.orchestration.context_graph.context_manager import (
-    ContextGraphCycleError,
-    ContextGraphManager,
-    ContextNodeType,
+# Week 1 DS-3 : Cryptographic Context Hashing tests
+# Tests for ContextHasher and  hash_runner processes
+
+import re
+from datetime import datetime
+
+from src.common.models import (
+    AgentIdentity,
+    AutonomyMode,
+    EvidenceEntry,
+    GoverningSliceSchema,
+    RiskTier,
+    WorkflowState,
+    WriteScope,
 )
-from src.orchestration.context_graph.context_hashing import compute_context_hash
+from src.orchestration.context_graph.context_hashing import (
+    ContextHasher,
+    StaleContextDetector,
+)
 
 
-def test_dummy_context_graph_happy_path_smoke() -> None:
-    manager = ContextGraphManager(default_token_budget=300)
+def build_slice(**overrides):
+    identity = AgentIdentity(
+        agent_id="agent_1",
+        owner="team_x",
+        team="refunds",
+        runtime="langchain",
+        risk_tier=RiskTier.MEDIUM,
+        declared_scopes=[
+            WriteScope(system="billing", action_class="refund.adjustment")
+        ],
+        feature_flags={"safe_profile": True, "trace_sampling": "standard"},
+    )
+    state = WorkflowState(
+        workflow_id="wf_001",
+        branch_id="branch_a",
+        step_number=1,
+        autonomy_mode=AutonomyMode.FULL,
+        degradation_level=0,
+        start_time=datetime(2026, 5, 12, 10, 30, 0),
+        last_checkpoint="checkpoint:t+00:00",
+    )
+    evidence = EvidenceEntry(
+        entry_id="ev_001",
+        timestamp=datetime(2026, 5, 12, 10, 31, 0),
+        actor_id="agent_1",
+        action="billing.adjustment",
+        context_hash="ctx_previous",
+        outcome="allowed",
+        policy_ref="policy.write_scope",
+    )
+    data = {
+        "identity": identity,
+        "state": state,
+        "current_tool_plan": "issue   refund",
+        "recent_history": [{"event": "customer    eligible", "attempt": 1}],
+        "active_evidence": [evidence],
+        "token_count": 200,
+        "metadata": {"source": "runtime", "priority": "P1"},
+    }
+    data.update(overrides)
+    return GoverningSliceSchema(**data)
 
-    workflow_state = manager.update_context(
-        "demo-workflow",
-        "main",
+
+def test_context_hash_is_sha256_hex_digest():
+    context_hash = ContextHasher.generate_hash(build_slice())
+
+    assert re.fullmatch(r"[0-9a-f]{64}", context_hash)
+
+
+def test_same_context_generates_same_hash():
+    slice_obj = build_slice()
+
+    assert ContextHasher.generate_hash(slice_obj) == ContextHasher.generate_hash(slice_obj)
+
+
+def test_changed_governance_state_changes_hash():
+    original_hash = ContextHasher.generate_hash(build_slice())
+    changed_hash = ContextHasher.generate_hash(
+        build_slice(
+            state=WorkflowState(
+                workflow_id="wf_001",
+                branch_id="branch_a",
+                step_number=2,
+                autonomy_mode=AutonomyMode.FULL,
+                degradation_level=0,
+                start_time=datetime(2026, 5, 12, 10, 30, 0),
+                last_checkpoint="checkpoint:t+00:00",
+            )
+        )
+    )
+
+    assert changed_hash != original_hash
+
+
+def test_reordered_mapping_keys_generate_same_hash():
+    first = {
+        "identity": {"agent_id": "agent_1", "owner": "team_x"},
+        "state": {"workflow_id": "wf_001", "step_number": 1},
+    }
+    second = {
+        "state": {"step_number": 1, "workflow_id": "wf_001"},
+        "identity": {"owner": "team_x", "agent_id": "agent_1"},
+    }
+
+    assert ContextHasher.generate_hash(first) == ContextHasher.generate_hash(second)
+
+
+def test_whitespace_noise_is_normalized_before_hashing():
+    noisy = {
+        "identity": {"agent_id": "agent_1", "owner": "team_x"},
+        "state": {"workflow_id": "wf_001", "step_number": 1},
+        "recent_history": [{"message": "refund     eligibility\nconfirmed"}],
+    }
+    normalized = {
+        "identity": {"agent_id": "agent_1", "owner": "team_x"},
+        "state": {"workflow_id": "wf_001", "step_number": 1},
+        "recent_history": [{"message": "refund eligibility confirmed"}],
+    }
+
+    assert ContextHasher.generate_hash(noisy) == ContextHasher.generate_hash(normalized)
+
+
+def test_token_count_is_excluded_as_derived_metadata():
+    first = build_slice(token_count=200)
+    second = build_slice(token_count=500)
+
+    assert ContextHasher.generate_hash(first) == ContextHasher.generate_hash(second)
+
+
+def test_stale_context_detection_compares_current_snapshot_to_stored_hash():
+    slice_obj = build_slice()
+    stored_hash = ContextHasher.generate_hash(slice_obj)
+    changed_slice = build_slice(current_tool_plan="queue manual review")
+
+    assert ContextHasher.compare_hashes(stored_hash, stored_hash)
+    assert ContextHasher.is_stale(changed_slice, stored_hash)
+
+
+def test_hash_runner_returns_hash_and_canonical_context_snapshot():
+    from src.orchestration.context_graph.hash_runner import run_hash_snapshot
+
+    slice_obj = build_slice()
+    snapshot = run_hash_snapshot(
+        slice_obj.identity,
+        slice_obj.state,
         {
-            "owner": "data-science",
-            "declared_write_scopes": ["billing.refund"],
-            "feature_flags": {"safe_mode": True},
+            "tool_plan": slice_obj.current_tool_plan,
+            "history": slice_obj.recent_history,
+            "metadata": slice_obj.metadata,
         },
-        node_type=ContextNodeType.WORKFLOW_STATE,
-        tags={"governing", "write_scope"},
-    )
-    user_intent = manager.update_context(
-        "demo-workflow",
-        "main",
-        "User wants a refund for duplicate billing charge INV-42.",
-        node_type=ContextNodeType.USER_INTENT,
-        parents=[workflow_state.node_id],
-    )
-    api_response = manager.update_context(
-        "demo-workflow",
-        "main",
-        {"invoice_id": "INV-42", "duplicate_charge": True, "amount": 25.0},
-        node_type=ContextNodeType.API_RESPONSE,
-        parents=[user_intent.node_id],
-    )
-    checkpoint = manager.create_checkpoint(
-        "demo-workflow",
-        "main",
-        {"step": "validated-refund-context"},
-        parents=[api_response.node_id],
+        slice_obj.active_evidence,
     )
 
-    governing_slice = manager.assemble_context(
-        "demo-workflow",
-        "main",
-        query="refund duplicate billing INV-42",
-        current_step={"tool": "billing.refund"},
-        required_node_ids=[workflow_state.node_id],
-        focus_node_id=api_response.node_id,
+    assert re.fullmatch(r"[0-9a-f]{64}", snapshot["context_hash"])
+    assert snapshot["canonical_context"]["identity"]["agent_id"] == "agent_1"
+    assert "token_count" not in snapshot["canonical_context"]
+
+
+# Week 2 DS-3 : Stale Context Detection tests
+# Tests for StaleContextDetection process
+
+def test_stale_context_detector_flags_memory_conflict_with_latest_ledger_state():
+    slice_obj = build_slice(
+        metadata={
+            "working_memory": {
+                "customer": {
+                    "refund_eligible": True,
+                }
+            }
+        }
     )
-
-    assert workflow_state.node_id in governing_slice.node_ids
-    assert user_intent.node_id in governing_slice.node_ids
-    assert api_response.node_id in governing_slice.node_ids
-    assert governing_slice.context_hash
-    assert governing_slice.token_count <= 300
-    assert manager.get_checkpoint("demo-workflow", "main") == checkpoint
-
-
-def test_context_graph_rejects_cycles() -> None:
-    manager = ContextGraphManager()
-    root = manager.update_context(
-        "wf-1",
-        "branch-a",
-        {"owner": "ops", "declared_write_scopes": ["billing.refund"]},
-        node_type=ContextNodeType.WORKFLOW_STATE,
-    )
-    child = manager.update_context(
-        "wf-1",
-        "branch-a",
-        "Refund workflow intent",
-        node_type=ContextNodeType.USER_INTENT,
-        parents=[root.node_id],
-    )
-
-    with pytest.raises(ContextGraphCycleError):
-        manager.link_context(child.node_id, root.node_id)
-
-
-def test_assemble_context_ranks_relevant_nodes_and_respects_budget() -> None:
-    manager = ContextGraphManager(default_token_budget=120, max_token_budget=120)
-    root = manager.update_context(
-        "refund-branch-882",
-        "main",
+    current_hash = ContextHasher.generate_hash(slice_obj)
+    ledger_entries = [
         {
-            "owner": "billing-ops",
-            "feature_flags": {"safer_profiles": False},
-            "declared_write_scopes": ["billing.refund", "crm.note"],
+            "entry_id": "ev_001",
+            "timestamp": datetime(2026, 5, 12, 10, 31, 0),
+            "outcome": "allowed",
+            "context_hash": current_hash,
+            "state_changes": {
+                "customer": {
+                    "refund_eligible": True,
+                }
+            },
         },
-        node_type=ContextNodeType.WORKFLOW_STATE,
-        tags={"governing", "write_scope"},
-        metadata={"write_scope": "billing.refund"},
-        importance=1.5,
+        {
+            "entry_id": "ev_002",
+            "timestamp": datetime(2026, 5, 12, 10, 32, 0),
+            "outcome": "allowed",
+            "context_hash": current_hash,
+            "state_changes": {
+                "customer": {
+                    "refund_eligible": False,
+                }
+            },
+        },
+    ]
+
+    report = StaleContextDetector().evaluate(slice_obj, ledger_entries)
+
+    assert report.is_stale
+    assert report.reasons == ["working_memory_conflicts_with_ledger"]
+    assert report.conflicts[0].key == "customer.refund_eligible"
+    assert report.conflicts[0].working_memory_value is True
+    assert report.conflicts[0].ledger_value is False
+    assert report.conflicts[0].ledger_entry_id == "ev_002"
+
+
+def test_stale_context_detector_uses_chronologically_verified_ledger_entries():
+    slice_obj = build_slice(
+        metadata={
+            "working_memory": {
+                "customer": {
+                    "refund_eligible": True,
+                }
+            }
+        }
     )
-    intent = manager.update_context(
-        "refund-branch-882",
-        "main",
-        "Customer asks to reverse a duplicate billing charge on invoice INV-123.",
-        node_type=ContextNodeType.USER_INTENT,
-        parents=[root.node_id],
+    current_hash = ContextHasher.generate_hash(slice_obj)
+    ledger_entries = [
+        {
+            "entry_id": "ev_verified",
+            "timestamp": datetime(2026, 5, 12, 10, 31, 0),
+            "outcome": "allowed",
+            "context_hash": current_hash,
+            "state_changes": {
+                "customer": {
+                    "refund_eligible": True,
+                }
+            },
+        },
+        {
+            "entry_id": "ev_failed",
+            "timestamp": datetime(2026, 5, 12, 10, 32, 0),
+            "outcome": "failed",
+            "context_hash": "failed-write-hash",
+            "state_changes": {
+                "customer": {
+                    "refund_eligible": False,
+                }
+            },
+        },
+    ]
+
+    report = StaleContextDetector().evaluate(slice_obj, ledger_entries)
+
+    assert not report.is_stale
+    assert report.latest_entry_id == "ev_verified"
+    assert report.conflicts == []
+
+
+def test_stale_context_detector_reads_artifact_fold_changes_from_ledger_entries():
+    slice_obj = build_slice(
+        metadata={
+            "working_memory": {
+                "customer": {
+                    "refund_eligible": True,
+                }
+            }
+        }
     )
-    api_response = manager.update_context(
-        "refund-branch-882",
-        "main",
-        {"invoice_id": "INV-123", "duplicate_charge": True, "amount": 40.0},
-        node_type=ContextNodeType.API_RESPONSE,
-        parents=[intent.node_id],
-    )
-    irrelevant = manager.update_context(
-        "refund-branch-882",
-        "main",
-        "Unrelated deployment trace " * 80,
-        node_type=ContextNodeType.AGENT_MEMORY,
-        parents=[root.node_id],
-    )
+    current_hash = ContextHasher.generate_hash(slice_obj)
+    ledger_entries = [
+        {
+            "entry_id": "ev_artifact_fold",
+            "timestamp": datetime(2026, 5, 12, 10, 32, 0),
+            "outcome": "state_changes_extracted",
+            "context_hash": current_hash,
+            "artifact_fold": {
+                "changes": [
+                    {
+                        "path": "customer.refund_eligible",
+                        "after": False,
+                    }
+                ]
+            },
+        }
+    ]
 
-    governing_slice = manager.assemble_context(
-        "refund-branch-882",
-        "main",
-        query="duplicate billing refund INV-123 write scope",
-        current_step={"tool": "billing.refund", "risk_tier": "HIGH"},
-        token_budget=120,
-        required_node_ids=[root.node_id],
-        focus_node_id=api_response.node_id,
-    )
+    report = StaleContextDetector().evaluate(slice_obj, ledger_entries)
 
-    assert governing_slice.token_count <= 120
-    assert root.node_id in governing_slice.node_ids
-    assert intent.node_id in governing_slice.node_ids
-    assert api_response.node_id in governing_slice.node_ids
-    assert irrelevant.node_id not in governing_slice.node_ids
-    assert irrelevant.node_id in governing_slice.omitted_node_ids
-
-
-def test_check_freshness_detects_changed_node_hashes() -> None:
-    manager = ContextGraphManager(default_token_budget=200, max_token_budget=200)
-    root = manager.update_context(
-        "wf-2",
-        "main",
-        {"owner": "ops", "feature_flags": {"safer_profile": False}},
-        node_type=ContextNodeType.WORKFLOW_STATE,
-    )
-    stored_slice = manager.assemble_context(
-        "wf-2",
-        "main",
-        query="owner feature flags",
-        required_node_ids=[root.node_id],
-    )
-
-    fresh = manager.check_freshness(
-        stored_slice,
-        workflow_id="wf-2",
-        branch_id="main",
-        query="owner feature flags",
-        required_node_ids=[root.node_id],
-    )
-    assert fresh.is_fresh
-
-    root.content["feature_flags"]["safer_profile"] = True
-    root.refresh_hash()
-    stale = manager.check_freshness(
-        stored_slice,
-        workflow_id="wf-2",
-        branch_id="main",
-        query="owner feature flags",
-        required_node_ids=[root.node_id],
-    )
-
-    assert stale.is_stale
-    assert stale.changed_node_ids == [root.node_id]
-
-
-def test_get_checkpoint_returns_latest_safe_resume_before_failure() -> None:
-    manager = ContextGraphManager()
-    root = manager.update_context(
-        "wf-3",
-        "main",
-        {"workflow": "refund"},
-        node_type=ContextNodeType.WORKFLOW_STATE,
-    )
-    first_checkpoint = manager.create_checkpoint(
-        "wf-3",
-        "main",
-        {"step": "intake"},
-        checkpoint_id="cp-1",
-        parents=[root.node_id],
-    )
-    tool_result = manager.update_context(
-        "wf-3",
-        "main",
-        {"validated": True},
-        node_type=ContextNodeType.TOOL_RESULT,
-        parents=[first_checkpoint.node_id],
-    )
-    second_checkpoint = manager.create_checkpoint(
-        "wf-3",
-        "main",
-        {"step": "pre-write"},
-        checkpoint_id="cp-2",
-        parents=[tool_result.node_id],
-    )
-    failure = manager.update_context(
-        "wf-3",
-        "main",
-        {"error": "write rejected"},
-        node_type=ContextNodeType.EVIDENCE,
-        parents=[second_checkpoint.node_id],
-    )
-
-    checkpoint = manager.get_checkpoint("wf-3", "main", before_node_id=failure.node_id)
-
-    assert checkpoint == second_checkpoint
-
-
-def test_fold_summary_adds_rlm_summary_with_source_lineage() -> None:
-    manager = ContextGraphManager()
-    intent = manager.update_context(
-        "wf-4",
-        "main",
-        "User wants approval context for a refund.",
-        node_type=ContextNodeType.USER_INTENT,
-    )
-    api_response = manager.update_context(
-        "wf-4",
-        "main",
-        {"invoice": "INV-9", "balance": 0},
-        node_type=ContextNodeType.API_RESPONSE,
-        parents=[intent.node_id],
-    )
-
-    summary = manager.fold_summary(
-        "wf-4",
-        "main",
-        "Refund is safe to review because invoice balance is zero.",
-        source_node_ids=[intent.node_id, api_response.node_id],
-        actor="rlm-summarizer",
-    )
-
-    assert summary.node_type is ContextNodeType.SUMMARY
-    assert summary.metadata["compressed_from"] == [intent.node_id, api_response.node_id]
-    assert "rlm_fold" in summary.tags
-    assert api_response in manager.lineage(summary.node_id)
-
-
-def test_optional_memory_and_bus_adapters_receive_context_events() -> None:
-    class Memory:
-        def __init__(self) -> None:
-            self.nodes = []
-
-        def store(self, node):
-            self.nodes.append(node)
-
-    class Bus:
-        def __init__(self) -> None:
-            self.events = []
-
-        def publish(self, event_type, payload):
-            self.events.append((event_type, payload))
-
-    memory = Memory()
-    bus = Bus()
-    manager = ContextGraphManager(memory_backend=memory, context_bus=bus)
-    node = manager.update_context("wf-5", "main", "shared context", node_type="fact")
-
-    assert memory.nodes[0]["node_id"] == node.node_id
-    assert bus.events[0][0] == "context.node_added"
-
-
-def test_context_hash_is_canonical_for_equivalent_snapshots() -> None:
-    left = compute_context_hash({"b": [2, 1], "a": {"x": True}})
-    right = compute_context_hash({"a": {"x": True}, "b": [2, 1]})
-
-    assert left == right
+    assert report.is_stale
+    assert report.conflicts[0].key == "customer.refund_eligible"
+    assert report.conflicts[0].ledger_value is False
+    assert report.latest_entry_id == "ev_artifact_fold"

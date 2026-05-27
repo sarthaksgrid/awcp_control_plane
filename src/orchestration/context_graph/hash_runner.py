@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from src.common.models import AgentIdentity, WorkflowState, EvidenceEntry
 from src.orchestration.context_graph.context_manager import ContextGraphManager
-from src.orchestration.context_graph.context_hashing import canonicalize_snapshot
+from src.orchestration.context_graph.context_hashing import ContextHasher
 
 
 def run_hash(
@@ -52,7 +52,15 @@ def run_hash_snapshot(
         state.branch_id,
         current_step=raw_signals,
     )
+    canonical_context = ContextHasher.canonicalize(
+        {
+            "identity": identity,
+            "state": state,
+            "raw_signals": raw_signals,
+            "prior_evidence": prior_evidence or [],
+        }
+    )
     return {
         "context_hash": slice_obj.context_hash,
-        "canonical_context": canonicalize_snapshot(slice_obj.to_dict()),
+        "canonical_context": canonical_context,
     }

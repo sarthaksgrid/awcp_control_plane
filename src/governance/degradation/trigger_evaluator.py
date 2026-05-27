@@ -31,12 +31,16 @@ References:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from src.common.models import AutonomyMode
+from src.orchestration.context_graph.context_hashing import (
+    StaleContextDetector,
+    StaleContextReport,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +236,25 @@ class DegradationDecision:
     budget_breached: bool
     signals: list[SignalScore]
     thresholds_used: FailureBudgetThresholds
+    stale_context_report: Optional[StaleContextReport] = None
     evaluated_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
+
+    @property
+    def should_degrade(self) -> bool:
+        return any(signal.breached for signal in self.signals)
+
+    @property
+    def triggers(self) -> list[str]:
+        return [signal.name for signal in self.signals if signal.breached]
+
+    @property
+    def evidence(self) -> dict[str, Any]:
+        evidence = {"signals": self.signal_breakdown}
+        if self.stale_context_report is not None:
+            evidence["stale_context_report"] = self.stale_context_report.as_signal()
+        return evidence
 
     @property
     def signal_breakdown(self) -> dict[str, dict[str, Any]]:
@@ -252,6 +272,11 @@ class DegradationDecision:
             "budget_breached": self.budget_breached,
             "signals": [signal.to_dict() for signal in self.signals],
             "thresholds_used": self.thresholds_used.to_dict(),
+            "stale_context_report": (
+                self.stale_context_report.as_signal()
+                if self.stale_context_report is not None
+                else None
+            ),
             "evaluated_at": self.evaluated_at.isoformat(),
         }
 
@@ -333,14 +358,26 @@ class TriggerEvaluator:
     def __init__(
         self,
         override_ladder: Optional[OverrideLadder] = None,
+        stale_context_detector: Optional[StaleContextDetector] = None,
     ) -> None:
         self.override_ladder = override_ladder or OverrideLadder()
+        self.stale_context_detector = stale_context_detector or StaleContextDetector()
+
+    def evaluate_stale_context(
+        self,
+        current_context: Any,
+        evidence_entries: Optional[Iterable[Any]] = None,
+    ) -> StaleContextReport:
+        """Compare current working memory with the verified ledger timeline."""
+        return self.stale_context_detector.evaluate(current_context, evidence_entries)
 
     def evaluate(
         self,
-        signals: TriggerSignals,
+        signals: TriggerSignals | Mapping[str, Any] | None = None,
         *,
         current_level: DegradationLevel = DegradationLevel.NONE,
+        current_context: Any = None,
+        evidence_entries: Optional[Iterable[Any]] = None,
     ) -> DegradationDecision:
         """Score all five signals and recommend a degradation level.
 
@@ -353,22 +390,33 @@ class TriggerEvaluator:
             never recommend going *down* — that requires an explicit
             operator reset via the Degradation Engine.
         """
-        thresholds = self.override_ladder.get_thresholds(signals.workflow_id)
+        trigger_signals = self._coerce_signals(signals)
+        stale_report = None
+        if current_context is not None:
+            stale_report = self.evaluate_stale_context(current_context, evidence_entries)
+            trigger_signals = replace(
+                trigger_signals,
+                stale_context=stale_report.is_stale,
+            )
 
-        scored = self._score_all_signals(signals, thresholds)
+        thresholds = self.override_ladder.get_thresholds(trigger_signals.workflow_id)
+
+        scored = self._score_all_signals(trigger_signals, thresholds)
         composite = sum(signal.weighted for signal in scored)
         composite = max(0.0, min(1.0, composite))
 
         budget_breached = self._is_budget_breached(scored)
         recommended = self._level_from_score(composite, thresholds)
+        if trigger_signals.stale_context and recommended.value < DegradationLevel.TIGHTEN.value:
+            recommended = DegradationLevel.TIGHTEN
 
         # Never downgrade automatically — only an operator can reduce level
         if recommended.value < current_level.value:
             recommended = current_level
 
         return DegradationDecision(
-            workflow_id=signals.workflow_id,
-            branch_id=signals.branch_id,
+            workflow_id=trigger_signals.workflow_id,
+            branch_id=trigger_signals.branch_id,
             composite_score=composite,
             recommended_level=recommended,
             recommended_autonomy=AUTONOMY_MAP[recommended],
@@ -377,6 +425,7 @@ class TriggerEvaluator:
             budget_breached=budget_breached,
             signals=scored,
             thresholds_used=thresholds,
+            stale_context_report=stale_report,
         )
 
     def evaluate_batch(
@@ -396,6 +445,14 @@ class TriggerEvaluator:
             )
             for signals in signal_batch
         ]
+
+    @staticmethod
+    def _coerce_signals(signals: TriggerSignals | Mapping[str, Any] | None) -> TriggerSignals:
+        if signals is None:
+            return TriggerSignals()
+        if isinstance(signals, TriggerSignals):
+            return signals
+        return TriggerSignals(**dict(signals))
 
     # ------------------------------------------------------------------
     # Signal scoring
