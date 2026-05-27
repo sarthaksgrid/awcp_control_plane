@@ -43,7 +43,7 @@ class ContextHasher:
         """
         Convert a GoverningSlice-like object into canonical, hashable data.
         """
-        return cls._normalize(cls._to_mapping(slice_obj))
+        return cls._normalize(slice_obj)
 
     @classmethod
     def canonical_json(cls, slice_obj: Any) -> str:
