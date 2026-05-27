@@ -11,9 +11,10 @@ changing the summarizer contract.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from src.execution.llm_gateway.gateway import LLMGateway, estimate_tokens
+from src.evidence.ledger.evidence_ledger import EvidenceLedger, LedgerEntry
 
 
 Summary = Dict[str, Any]
@@ -122,6 +123,65 @@ def fold_document(
         chunk_token_budget=chunk_token_budget,
         gateway=gateway,
         max_fold_depth=max_fold_depth,
+    )
+
+
+def summarize_trace_to_ledger(
+    trace_events: Sequence[Any],
+    *,
+    ledger: EvidenceLedger,
+    workflow_id: str,
+    branch_id: str,
+    actor_id: str,
+    context_hash: str,
+    degradation_state: Optional[Mapping[str, Any]] = None,
+    rollback_pointer: Optional[str] = None,
+    replay_trace_ref: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    token_budget: int = 1000,
+    chunk_token_budget: int = 350,
+    gateway: Optional[Any] = None,
+    max_fold_depth: int = 5,
+) -> LedgerEntry:
+    """
+    Compress a trace with RLM logic and write the summary to the evidence ledger.
+
+    This is the Week 2 DS integration point described by the architecture:
+    folded replay context is persisted with context hash, degradation state,
+    replay reference, and rollback pointer metadata.
+    """
+    summary_metadata = {
+        "workflow_id": workflow_id,
+        "branch_id": branch_id,
+        **dict(metadata or {}),
+    }
+    summary = summarize_trace(
+        trace_events,
+        metadata=summary_metadata,
+        token_budget=token_budget,
+        chunk_token_budget=chunk_token_budget,
+        gateway=gateway,
+        max_fold_depth=max_fold_depth,
+    )
+
+    return ledger.write_entry(
+        workflow_id=workflow_id,
+        branch_id=branch_id,
+        actor_id=actor_id,
+        action="replay_trace_summary",
+        context_hash=context_hash,
+        outcome="rlm_summary_written",
+        degradation_state=dict(degradation_state) if degradation_state else None,
+        replay_trace_ref=replay_trace_ref,
+        rollback_pointer=rollback_pointer,
+        metadata={
+            "summary_type": "rlm_trace_summary",
+            "summary": summary,
+            "summary_token_count": summary["token_count"],
+            "fold_depth": summary["fold_depth"],
+            "evidence_refs": summary["evidence_refs"],
+            "next_safe_action": summary["next_safe_action"],
+        },
     )
 
 
