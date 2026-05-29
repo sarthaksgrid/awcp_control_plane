@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 import traceback
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import Context, ContextVar, Token, copy_context as _copy_context
 from dataclasses import dataclass
@@ -619,12 +619,15 @@ def configure_logging(
     handler.setLevel(resolved_level)
     setattr(handler, "_awcp_handler", True)
 
-    resolved_service = service or os.getenv("AWCP_SERVICE_NAME", _DEFAULT_SERVICE_NAME)
-    resolved_environment = environment or os.getenv(
-        "AWCP_ENVIRONMENT",
-        os.getenv("ENVIRONMENT", _DEFAULT_ENVIRONMENT),
+    resolved_service = service or _env_or_default(
+        "AWCP_SERVICE_NAME",
+        _DEFAULT_SERVICE_NAME,
     )
-    resolved_version = version or os.getenv("AWCP_VERSION", _DEFAULT_VERSION)
+    resolved_environment = environment or _env_or_default(
+        "AWCP_ENVIRONMENT",
+        _env_or_default("ENVIRONMENT", _DEFAULT_ENVIRONMENT),
+    )
+    resolved_version = version or _env_or_default("AWCP_VERSION", _DEFAULT_VERSION)
 
     if json_logs:
         handler.setFormatter(
@@ -1036,9 +1039,12 @@ def run_with_context(
         )
 
         async def _async_runner() -> Any:
-            awaitable = execution_context.run(func, *args, **kwargs)
-            task = asyncio.create_task(
-                cast(Awaitable[Any], awaitable),
+            coroutine = cast(
+                Coroutine[Any, Any, Any],
+                execution_context.run(func, *args, **kwargs),
+            )
+            task: asyncio.Task[Any] = asyncio.create_task(
+                coroutine,
                 context=execution_context,
             )
             return await task
@@ -1079,23 +1085,26 @@ def _build_governance_payload(
         "escalation_required": escalation_required,
     }
 
-    optional_values: Mapping[str, str | None] = {
-        "policy_id": policy_id,
-        "agent_id": agent_id,
-        "tenant_id": context.tenant_id,
-        "workflow_id": context.workflow_id,
-        "execution_id": context.execution_id,
-        "replay_id": context.replay_id,
-        "correlation_id": context.correlation_id,
-        "request_id": context.request_id,
-        "escalation_trigger": str(escalation_trigger)
-        if escalation_trigger is not None
-        else None,
-        "reason": reason,
-    }
-    for key, value in optional_values.items():
-        if value is not None:
-            payload[cast(Any, key)] = value
+    if policy_id is not None:
+        payload["policy_id"] = policy_id
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    if context.tenant_id is not None:
+        payload["tenant_id"] = context.tenant_id
+    if context.workflow_id is not None:
+        payload["workflow_id"] = context.workflow_id
+    if context.execution_id is not None:
+        payload["execution_id"] = context.execution_id
+    if context.replay_id is not None:
+        payload["replay_id"] = context.replay_id
+    if context.correlation_id is not None:
+        payload["correlation_id"] = context.correlation_id
+    if context.request_id is not None:
+        payload["request_id"] = context.request_id
+    if escalation_trigger is not None:
+        payload["escalation_trigger"] = str(escalation_trigger)
+    if reason is not None:
+        payload["reason"] = reason
 
     if details:
         payload["details"] = cast(dict[str, Any], _to_json_compatible(details))
@@ -1419,3 +1428,12 @@ def _resolve_log_level(log_level: str | int) -> int:
         return resolved
 
     raise ValueError(f"unknown log level: {log_level}")
+
+
+def _env_or_default(name: str, default: str) -> str:
+    """Return an environment variable value while preserving explicit empty strings."""
+
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value
