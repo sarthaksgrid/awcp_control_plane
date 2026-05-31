@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: temporal
+  namespace: awcp
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: temporal
+
+  template:
+    metadata:
+      labels:
+        app: temporal
+
+    spec:
+      containers:
+      - name: temporal
+        image: temporalio/auto-setup:1.22
+
+        ports:
+        - containerPort: 7233
+
+        env:
+        - name: DB
+          value: "postgresql"
+
+        - name: DB_PORT
+          value: "5432"
+
+        - name: POSTGRES_USER
+          value: "temporal"
+
+        - name: POSTGRES_PWD
+          value: "temporal"
+
+        - name: POSTGRES_SEEDS
+          value: "postgres"
