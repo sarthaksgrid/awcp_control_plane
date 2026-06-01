@@ -1,1 +1,0 @@
-# AWCP — Quarantine Management Views
