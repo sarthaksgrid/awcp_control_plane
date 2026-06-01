@@ -3,9 +3,9 @@ import asyncio
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from app.activities import call_ollama_run
-from app.config import TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE
-from app.workflows import OllamaRunWorkflow
+from awcp_control_plane.app.activities import call_ollama_run
+from awcp_control_plane.app.config import TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE
+from awcp_control_plane.app.workflows import OllamaRunWorkflow
 
 
 async def main() -> None:

@@ -5,14 +5,14 @@ from uuid import uuid4
 
 from temporalio.client import Client
 
-from app.config import (
+from awcp_control_plane.app.config import (
     OLLAMA_RUN_URL,
     TEMPORAL_ADDRESS,
     TEMPORAL_NAMESPACE,
     TEMPORAL_TASK_QUEUE,
     TEMPORAL_UI_URL,
 )
-from app.workflows import OllamaRunWorkflow
+from awcp_control_plane.app.workflows import OllamaRunWorkflow
 
 
 async def start_workflow(input_text: str) -> dict:
