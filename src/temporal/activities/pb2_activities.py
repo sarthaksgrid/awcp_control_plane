@@ -7,6 +7,8 @@ evidence writes, approval request creation, and sandbox artifact folding.
 
 from __future__ import annotations
 
+from typing import Any
+
 from temporalio import activity
 
 from src.pb2.ds_stub import score_agent_event
@@ -23,10 +25,11 @@ async def pb2_score_event(event: AgentEvent) -> dict:
 
 
 @activity.defn
-async def pb2_write_evidence(entry: EvidenceEntry) -> dict:
+async def pb2_write_evidence(entry: dict[str, Any]) -> dict:
     """Append a workflow event to the Evidence Ledger."""
 
-    return state.evidence.append(entry).model_dump(mode="json")
+    evidence_entry = EvidenceEntry.model_validate(entry)
+    return state.evidence.append(evidence_entry).model_dump(mode="json")
 
 
 @activity.defn
@@ -55,20 +58,22 @@ async def pb2_create_approval(event: AgentEvent, decision: dict) -> dict:
 
 
 @activity.defn
-async def pb2_save_workflow(record: WorkflowRecord) -> dict:
+async def pb2_save_workflow(record: dict[str, Any]) -> dict:
     """Update the current workflow state shown to the operator UI."""
 
-    return state.save_workflow(record).model_dump(mode="json")
+    workflow_record = WorkflowRecord.model_validate(record)
+    return state.save_workflow(workflow_record).model_dump(mode="json")
 
 
 @activity.defn
-async def pb2_run_sandbox(request: SandboxRunRequest) -> dict:
+async def pb2_run_sandbox(request: dict[str, Any]) -> dict:
     """Fold sandbox output into a compact artifact trace.
 
     DevOps/PB-1 can replace this local stub with Modal execution later.
     """
 
-    artifact = request.artifact or {
+    sandbox_request = SandboxRunRequest.model_validate(request)
+    artifact = sandbox_request.artifact or {
         "stdout": "temporal sandbox dry-run complete",
         "updated_customer_id": "cus_1042",
         "write_status": "simulated",

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
-    from src.pb2.schemas import AgentEvent, EvidenceEntry, SandboxRunRequest, WorkflowRecord
+    from src.pb2.schemas import AgentEvent
     from src.temporal.activities.pb2_activities import (
         pb2_create_approval,
         pb2_run_sandbox,
@@ -32,6 +33,31 @@ class GovernedAgentWorkflow:
     def __init__(self) -> None:
         self._approval_token: str | None = None
         self._denied = False
+
+    def _workflow_record(
+        self,
+        event: AgentEvent,
+        decision: dict[str, Any],
+        *,
+        status: str,
+        autonomy_mode: str,
+        latest_summary: str,
+    ) -> dict[str, Any]:
+        """Build a JSON-safe workflow record payload for activities."""
+
+        return {
+            "workflow_id": event.workflow_id,
+            "branch_id": event.branch_id,
+            "agent_id": event.agent_id,
+            "owner": event.owner,
+            "status": status,
+            "autonomy_mode": autonomy_mode,
+            "risk_tier": event.risk_tier,
+            "policy_decision": decision["decision"],
+            "context_hash": event.context_hash,
+            "idempotency_key": f"temporal:{workflow.info().workflow_id}",
+            "latest_summary": latest_summary,
+        }
 
     @workflow.signal
     async def approve(self, token: str) -> None:
@@ -58,17 +84,11 @@ class GovernedAgentWorkflow:
 
         await workflow.execute_activity(
             pb2_save_workflow,
-            WorkflowRecord(
-                workflow_id=event.workflow_id,
-                branch_id=event.branch_id,
-                agent_id=event.agent_id,
-                owner=event.owner,
+            self._workflow_record(
+                event,
+                decision,
                 status=status,
                 autonomy_mode=autonomy_mode,
-                risk_tier=event.risk_tier,
-                policy_decision=decision["decision"],
-                context_hash=event.context_hash,
-                idempotency_key=f"temporal:{workflow.info().workflow_id}",
                 latest_summary=decision["reason"],
             ),
             start_to_close_timeout=timedelta(seconds=10),
@@ -76,17 +96,17 @@ class GovernedAgentWorkflow:
 
         await workflow.execute_activity(
             pb2_write_evidence,
-            EvidenceEntry(
-                workflow_id=event.workflow_id,
-                branch_id=event.branch_id,
-                actor=event.agent_id,
-                action=event.action_class,
-                policy_result=decision["decision"],
-                context_hash=event.context_hash,
-                degradation_state=autonomy_mode,
-                replay_trace={"ds_score": decision, "source": "temporal"},
-                rollback_pointer=f"{event.workflow_id}:{event.branch_id}:before-{event.action_class}",
-            ),
+            {
+                "workflow_id": event.workflow_id,
+                "branch_id": event.branch_id,
+                "actor": event.agent_id,
+                "action": event.action_class,
+                "policy_result": decision["decision"],
+                "context_hash": event.context_hash,
+                "degradation_state": autonomy_mode,
+                "replay_trace": {"ds_score": decision, "source": "temporal"},
+                "rollback_pointer": f"{event.workflow_id}:{event.branch_id}:before-{event.action_class}",
+            },
             start_to_close_timeout=timedelta(seconds=10),
         )
 
@@ -106,17 +126,11 @@ class GovernedAgentWorkflow:
             if self._denied:
                 await workflow.execute_activity(
                     pb2_save_workflow,
-                    WorkflowRecord(
-                        workflow_id=event.workflow_id,
-                        branch_id=event.branch_id,
-                        agent_id=event.agent_id,
-                        owner=event.owner,
+                    self._workflow_record(
+                        event,
+                        decision,
                         status="blocked_by_operator",
                         autonomy_mode="recommendation_only",
-                        risk_tier=event.risk_tier,
-                        policy_decision=decision["decision"],
-                        context_hash=event.context_hash,
-                        idempotency_key=f"temporal:{workflow.info().workflow_id}",
                         latest_summary="Operator denied the narrow approval token.",
                     ),
                     start_to_close_timeout=timedelta(seconds=10),
@@ -126,17 +140,11 @@ class GovernedAgentWorkflow:
             if self._approval_token is None:
                 await workflow.execute_activity(
                     pb2_save_workflow,
-                    WorkflowRecord(
-                        workflow_id=event.workflow_id,
-                        branch_id=event.branch_id,
-                        agent_id=event.agent_id,
-                        owner=event.owner,
+                    self._workflow_record(
+                        event,
+                        decision,
                         status="approval_timeout",
                         autonomy_mode="recommendation_only",
-                        risk_tier=event.risk_tier,
-                        policy_decision=decision["decision"],
-                        context_hash=event.context_hash,
-                        idempotency_key=f"temporal:{workflow.info().workflow_id}",
                         latest_summary="Approval window expired before the operator issued a token.",
                     ),
                     start_to_close_timeout=timedelta(seconds=10),
@@ -145,17 +153,11 @@ class GovernedAgentWorkflow:
 
         await workflow.execute_activity(
             pb2_save_workflow,
-            WorkflowRecord(
-                workflow_id=event.workflow_id,
-                branch_id=event.branch_id,
-                agent_id=event.agent_id,
-                owner=event.owner,
+            self._workflow_record(
+                event,
+                decision,
                 status="sandbox_running",
                 autonomy_mode="token_gated",
-                risk_tier=event.risk_tier,
-                policy_decision=decision["decision"],
-                context_hash=event.context_hash,
-                idempotency_key=f"temporal:{workflow.info().workflow_id}",
                 latest_summary="Approval token received. Running sandbox artifact fold.",
             ),
             start_to_close_timeout=timedelta(seconds=10),
@@ -163,40 +165,34 @@ class GovernedAgentWorkflow:
 
         folded = await workflow.execute_activity(
             pb2_run_sandbox,
-            SandboxRunRequest(workflow_id=event.workflow_id, branch_id=event.branch_id),
+            {"workflow_id": event.workflow_id, "branch_id": event.branch_id},
             start_to_close_timeout=timedelta(seconds=30),
         )
 
         await workflow.execute_activity(
             pb2_write_evidence,
-            EvidenceEntry(
-                workflow_id=event.workflow_id,
-                branch_id=event.branch_id,
-                actor="codeact-sandbox",
-                action="sandbox.artifact_fold",
-                policy_result="captured",
-                context_hash=event.context_hash,
-                degradation_state="full",
-                replay_trace=folded,
-                rollback_pointer=f"{event.workflow_id}:{event.branch_id}:sandbox",
-                approval_token_id=approval["id"] if approval else None,
-            ),
+            {
+                "workflow_id": event.workflow_id,
+                "branch_id": event.branch_id,
+                "actor": "codeact-sandbox",
+                "action": "sandbox.artifact_fold",
+                "policy_result": "captured",
+                "context_hash": event.context_hash,
+                "degradation_state": "full",
+                "replay_trace": folded,
+                "rollback_pointer": f"{event.workflow_id}:{event.branch_id}:sandbox",
+                "approval_token_id": approval["id"] if approval else None,
+            },
             start_to_close_timeout=timedelta(seconds=10),
         )
 
         await workflow.execute_activity(
             pb2_save_workflow,
-            WorkflowRecord(
-                workflow_id=event.workflow_id,
-                branch_id=event.branch_id,
-                agent_id=event.agent_id,
-                owner=event.owner,
+            self._workflow_record(
+                event,
+                decision,
                 status="temporal_completed",
                 autonomy_mode="full",
-                risk_tier=event.risk_tier,
-                policy_decision=decision["decision"],
-                context_hash=event.context_hash,
-                idempotency_key=f"temporal:{workflow.info().workflow_id}",
                 latest_summary="Temporal workflow completed and evidence was captured.",
             ),
             start_to_close_timeout=timedelta(seconds=10),
