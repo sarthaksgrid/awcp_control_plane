@@ -5,7 +5,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from awcp_control_plane.app.activities import call_ollama_run
+    from app.activities import call_ollama_run
 
 
 @workflow.defn
