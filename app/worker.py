@@ -3,9 +3,9 @@ import asyncio
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from app.activities import call_ollama_run
+from app.activities import call_deepseek_run, call_ollama_run
 from app.config import TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE
-from app.workflows import OllamaRunWorkflow
+from app.workflows import OllamaRunWorkflow, deepSeekRunWorkflow
 
 
 async def main() -> None:
@@ -17,8 +17,8 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=TEMPORAL_TASK_QUEUE,
-        workflows=[OllamaRunWorkflow],
-        activities=[call_ollama_run],
+        workflows=[OllamaRunWorkflow, deepSeekRunWorkflow],
+        activities=[call_ollama_run, call_deepseek_run],
     )
 
     print(
