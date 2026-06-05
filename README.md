@@ -182,3 +182,62 @@ curl -X POST https://crumpet-alphabet-truffle.ngrok-free.dev/run \
   -H "ngrok-skip-browser-warning: true" \
   -d '{"input":"test from terminal"}'
 ```
+
+## Event Tracking & Activity Grouping
+
+**Recent Update (2026-06-03):** The workflow now groups execution events intelligently in the Temporal UI.
+
+### What This Means
+
+- **Before:** Agent runs created 5+ separate activities (agent_started, tool_started, tool_succeeded, agent_completed, etc.)
+- **After:** Agent runs create consolidated activities:
+  - **1 activity** for the full agent execution (`agent_run`)
+  - **1 activity per tool** invocation (e.g., `web_search`)
+
+### Example
+
+Agent run that uses web search:
+```
+Temporal UI Activities:
+├─ agent_run       → Complete agent execution (input → output)
+└─ web_search      → Complete tool call (query → result)
+```
+
+If the same tool is called multiple times: `web_search`, `web_search_2`, `web_search_3`, etc.
+
+### Documentation
+
+For complete details on event tracking:
+- [**QUICK_REFERENCE.md**](./QUICK_REFERENCE.md) - Quick start guide
+- [**WORKFLOW_EVENT_TRACKING.md**](./WORKFLOW_EVENT_TRACKING.md) - Full implementation details
+- [**CHANGES_SUMMARY.md**](./CHANGES_SUMMARY.md) - Complete changelog
+
+### Requirements for Agent Services
+
+If your FastAPI agent service emits tool calls, ensure the response includes:
+
+```json
+{
+  "body": {
+    "tool_calls": [
+      {
+        "event_type": "tool_call",
+        "tool_name": "web_search",
+        "status": "started",
+        "input": {"query": "..."}
+      },
+      {
+        "event_type": "tool_call",
+        "tool_name": "web_search",
+        "status": "succeeded",
+        "output": {"type": "str", "preview": "..."}
+      }
+    ]
+  }
+}
+```
+
+Key points:
+- Each tool call emits 2 events: `started` and `succeeded`/`failed`
+- The workflow automatically groups them into single activities
+- Empty array `tool_calls: []` is valid for non-tool agent runs

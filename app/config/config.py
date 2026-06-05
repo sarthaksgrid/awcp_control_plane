@@ -11,3 +11,10 @@ OLLAMA_API_BASE_URL = os.getenv(
     "https://crumpet-alphabet-truffle.ngrok-free.dev",
 ).rstrip("/")
 OLLAMA_RUN_URL = f"{OLLAMA_API_BASE_URL}/run"
+
+
+DEEPSEEK_API_BASE_URL = os.getenv(
+    "DEEPSEEK_API_BASE_URL",
+    "https://simile-surcharge-evasion.ngrok-free.dev"
+).rstrip("/")
+DEEPSEEK_RUN_URL = f"{DEEPSEEK_API_BASE_URL}/run"
